@@ -231,7 +231,7 @@ class PipelineIntegrationTests(unittest.TestCase):
             registry_path = inbox / ".processed.json"
             mom_from_audio.save_registry(registry_path, registry)
 
-            with mock.patch.object(mom_from_audio.transcribe_m4a, "AudioTranscriber") as tr:
+            with mock.patch.object(mom_from_audio, "get_transcriber") as tr:
                 stderr = io.StringIO()
                 with mock.patch("sys.stderr", stderr):
                     code = mom_from_audio.run_pipeline(
@@ -256,8 +256,8 @@ class PipelineIntegrationTests(unittest.TestCase):
             fake_transcriber = mock.Mock()
 
             with mock.patch.object(
-                mom_from_audio.transcribe_m4a,
-                "AudioTranscriber",
+                mom_from_audio,
+                "get_transcriber",
                 return_value=fake_transcriber,
             ), mock.patch.object(
                 mom_from_audio,

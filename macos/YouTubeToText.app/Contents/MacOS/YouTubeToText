@@ -1,0 +1,101 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+export PATH="${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+CONTENTS_DIR="$(cd -- "$(dirname -- "$0")/.." >/dev/null 2>&1 && pwd)"
+HELPER="${CONTENTS_DIR}/Resources/run_pipeline.sh"
+PROJECT_DIR="${YOUTUBE_PROJECT_DIR:-/Users/spider/REPOS/mlx-youtube-scribe-omlx}"
+INBOX_DIR="${YOUTUBE_INBOX_DIR:-${HOME}/Desktop/YouTubeToText}"
+PYTHON_BIN="${YOUTUBE_PYTHON:-${HOME}/miniconda3/envs/youtube/bin/python}"
+RUNNER="${PROJECT_DIR}/run_youtube_inbox.sh"
+STT_SCRIPT="${PROJECT_DIR}/src/stt.py"
+
+show_error() {
+  /usr/bin/osascript - "$1" <<'APPLESCRIPT'
+on run argv
+  display alert "YouTubeToText" message (item 1 of argv) as critical
+end run
+APPLESCRIPT
+}
+
+if [[ ! -f "${HELPER}" || ! -f "${RUNNER}" || ! -f "${STT_SCRIPT}" ]]; then
+  show_error "The YouTubeToText runner is missing. Expected: ${RUNNER}, ${HELPER}, and ${STT_SCRIPT}"
+  exit 1
+fi
+
+STT_DATA="$(
+  cd -- "${PROJECT_DIR}"
+  PYTHONPATH="${PROJECT_DIR}/src" "${PYTHON_BIN}" "${STT_SCRIPT}" --app-dialog-data --inbox "${INBOX_DIR}"
+)" || {
+  show_error "Could not load the STT model list from ${STT_SCRIPT}"
+  exit 1
+}
+
+DEFAULT_STT_LABEL="$(printf '%s\n' "${STT_DATA}" | sed -n '1p')"
+STT_LIST="$(printf '%s\n' "${STT_DATA}" | sed '1d')"
+
+if ! STT_LABEL="$(/usr/bin/osascript - "${DEFAULT_STT_LABEL}" "${STT_LIST}" <<'APPLESCRIPT'
+on run argv
+  set defaultLabel to item 1 of argv
+  set rawList to item 2 of argv
+  set AppleScript's text item delimiters to {linefeed, return}
+  set sttOptions to {}
+  repeat with piece in text items of rawList
+    if (piece as text) is not "" then set end of sttOptions to piece as text
+  end repeat
+  if (count of sttOptions) is 0 then error "No STT models are configured."
+  set chosenDefault to item 1 of sttOptions
+  if defaultLabel is in sttOptions then set chosenDefault to defaultLabel
+  set sttChoice to choose from list sttOptions with title "YouTubeToText" with prompt "Select the speech-to-text model. This becomes the default until you change it." default items {chosenDefault} OK button name "Use this STT" cancel button name "Cancel"
+  if sttChoice is false then error number -128
+  return item 1 of sttChoice
+end run
+APPLESCRIPT
+)"; then
+  exit 0
+fi
+
+if ! STT_KEY="$(
+  cd -- "${PROJECT_DIR}"
+  PYTHONPATH="${PROJECT_DIR}/src" "${PYTHON_BIN}" "${STT_SCRIPT}" --save-from-label "${STT_LABEL}" --inbox "${INBOX_DIR}"
+)"; then
+  show_error "Could not save the selected STT model."
+  exit 1
+fi
+
+if ! CHOICE="$(/usr/bin/osascript - "${INBOX_DIR}" "${STT_LABEL}" <<'APPLESCRIPT'
+on run argv
+  set inboxPath to item 1 of argv
+  set sttLabel to item 2 of argv
+  set explanation to "STT: " & sttLabel & return & return & "Copy a YouTube share link and choose Add copied link to queue and transcribe it." & return & return & "Or drop link files in:" & return & inboxPath & return & return & "Process folder transcribes new additions. Previously completed videos are skipped."
+  set choice to display dialog explanation with title "YouTubeToText" buttons {"Cancel", "Add copied link", "Process folder"} default button "Process folder" cancel button "Cancel"
+  return button returned of choice
+end run
+APPLESCRIPT
+)"; then
+  exit 0
+fi
+
+# Capture and persist clipboard input now, before Terminal creates a new session.
+if [[ "${CHOICE}" == "Add copied link" ]]; then
+  if ! RESULT="$(YOUTUBE_PYTHON="${PYTHON_BIN}" /bin/bash "${RUNNER}" --inbox "${INBOX_DIR}" --add-clipboard --enqueue-only 2>&1)"; then
+    show_error $'Could not add the copied link.\n\n'"${RESULT}"
+    exit 1
+  fi
+fi
+
+# All paths are passed as argv, then shell-quoted by AppleScript.
+/usr/bin/osascript - "${HELPER}" "${PROJECT_DIR}" "${INBOX_DIR}" "${PYTHON_BIN}" "${STT_KEY}" <<'APPLESCRIPT'
+on run argv
+  set helperPath to item 1 of argv
+  set projectPath to item 2 of argv
+  set inboxPath to item 3 of argv
+  set pythonPath to item 4 of argv
+  set sttKey to item 5 of argv
+  set runCommand to "/bin/bash " & quoted form of helperPath & " " & quoted form of projectPath & " " & quoted form of inboxPath & " " & quoted form of pythonPath & " " & quoted form of sttKey
+  tell application "Terminal"
+    activate
+    do script runCommand
+  end tell
+end run
+APPLESCRIPT

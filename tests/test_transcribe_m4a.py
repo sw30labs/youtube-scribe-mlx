@@ -28,16 +28,26 @@ class ValidateAudioPathTests(unittest.TestCase):
                 audio_path.resolve(),
             )
 
+    def test_accepts_existing_mp3_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "recording.MP3"
+            audio_path.touch()
+
+            self.assertEqual(
+                transcribe_m4a.validate_audio_path(str(audio_path)),
+                audio_path.resolve(),
+            )
+
     def test_rejects_missing_file(self):
         with self.assertRaisesRegex(ValueError, "not found"):
             transcribe_m4a.validate_audio_path("missing.m4a")
 
-    def test_rejects_non_m4a_file(self):
+    def test_rejects_unsupported_audio_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             audio_path = Path(temp_dir) / "recording.wav"
             audio_path.touch()
 
-            with self.assertRaisesRegex(ValueError, "Expected an .m4a"):
+            with self.assertRaisesRegex(ValueError, r"Expected an \.m4a or \.mp3"):
                 transcribe_m4a.validate_audio_path(str(audio_path))
 
 
@@ -55,7 +65,7 @@ class FfmpegConversionTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             run.side_effect = create_output
-            transcribe_m4a.convert_m4a_to_wav(audio_path, wav_path)
+            transcribe_m4a.convert_audio_to_wav(audio_path, wav_path)
 
             command = run.call_args.args[0]
             self.assertIsInstance(command, list)
@@ -63,6 +73,7 @@ class FfmpegConversionTests(unittest.TestCase):
             self.assertIn(str(wav_path), command)
             self.assertIn("16000", command)
             self.assertIn("pcm_s16le", command)
+            self.assertIs(transcribe_m4a.convert_m4a_to_wav, transcribe_m4a.convert_audio_to_wav)
 
     @mock.patch("transcribe_m4a.shutil.which", return_value=None)
     def test_reports_missing_ffmpeg(self, _which):
@@ -89,12 +100,12 @@ class TranscriptionLifecycleTests(unittest.TestCase):
 
 
     @mock.patch("transcribe_m4a.transcribe_wav", side_effect=RuntimeError("model failed"))
-    @mock.patch("transcribe_m4a.convert_m4a_to_wav")
-    @mock.patch("transcribe_m4a.AudioTranscriber")
+    @mock.patch("transcribe_m4a.convert_audio_to_wav")
+    @mock.patch("transcribe_m4a.get_transcriber")
     def test_model_is_cleaned_up_after_transcription_error(
-        self, transcriber_class, convert, _transcribe_wav
+        self, get_transcriber, convert, _transcribe_wav
     ):
-        transcriber = transcriber_class.return_value
+        transcriber = get_transcriber.return_value
 
         def create_wav(_audio_path, wav_path):
             wav_path.touch()
@@ -103,7 +114,7 @@ class TranscriptionLifecycleTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             transcribe_m4a.TranscriptionError,
-            "Whisper transcription failed: model failed",
+            "STT transcription failed: model failed",
         ):
             transcribe_m4a.transcribe_m4a(Path("audio.m4a"))
 
@@ -170,7 +181,42 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(stdout.getvalue(), "Hello world.\n")
-            transcribe.assert_called_once_with(audio_path.resolve(), language="en")
+            transcribe.assert_called_once_with(
+                audio_path.resolve(), language="en", stt=None
+            )
+
+    @mock.patch("transcribe_m4a.transcribe_m4a", return_value="Parakeet text.")
+    def test_forwards_stt_flag(self, transcribe):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.m4a"
+            audio_path.touch()
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                exit_code = transcribe_m4a.main(
+                    [str(audio_path), "--stt", "whisper-turbo"]
+                )
+
+            self.assertEqual(exit_code, 0)
+            transcribe.assert_called_once_with(
+                audio_path.resolve(), language="en", stt="whisper-turbo"
+            )
+
+    @mock.patch("transcribe_m4a.transcribe_m4a", return_value="From mp3.")
+    def test_accepts_mp3_on_cli(self, transcribe):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "audio.mp3"
+            audio_path.touch()
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                exit_code = transcribe_m4a.main([str(audio_path)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stdout.getvalue(), "From mp3.\n")
+            transcribe.assert_called_once_with(
+                audio_path.resolve(), language="en", stt=None
+            )
 
     @mock.patch("transcribe_m4a.transcribe_m4a", return_value="Saved text.")
     def test_writes_requested_output_file(self, _transcribe):

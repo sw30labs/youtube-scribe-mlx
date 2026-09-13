@@ -91,9 +91,16 @@ class AudioTranscriber:
         print("mlx-whisper ready (Metal).", file=sys.stderr)
 
     @classmethod
-    def get_instance(cls, language: str = "en") -> "AudioTranscriber":
+    def get_instance(
+        cls, language: str = "en", model_id: str = MODEL_ID
+    ) -> "AudioTranscriber":
+        current = cls._instance
+        if current is not None and (
+            current.language != language or current.model_id != model_id
+        ):
+            current.cleanup()
         if cls._instance is None:
-            cls._instance = cls(language=language)
+            cls._instance = cls(model_id=model_id, language=language)
         return cls._instance
 
     def transcribe(
@@ -112,6 +119,7 @@ class AudioTranscriber:
             task="transcribe",
             fp16=True,
             verbose=verbose,
+            condition_on_previous_text=False,
         )
         return (result.get("text") or "").strip()
 

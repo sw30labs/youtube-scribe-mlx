@@ -59,6 +59,7 @@ class AudioTranscriberTests(unittest.TestCase):
         self.assertEqual(kwargs["path_or_hf_repo"], "mlx-community/whisper-large-v3-turbo")
         self.assertEqual(kwargs["language"], "en")
         self.assertTrue(kwargs["fp16"])
+        self.assertFalse(kwargs["condition_on_previous_text"])
         self.assertEqual(text, "hello from metal")
 
     def test_cleanup_drops_cached_model(self):

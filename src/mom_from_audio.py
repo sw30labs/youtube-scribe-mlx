@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import transcribe_m4a
+from stt import add_stt_argument, get_transcriber, resolve_choice, save_stt
 
 
 DEFAULT_INBOX = Path.home() / "Desktop" / "AudioToMoM"
@@ -360,15 +361,18 @@ def write_text(path: Path, text: str) -> None:
 
 def transcribe_one(
     audio_path: Path,
-    transcriber: transcribe_m4a.AudioTranscriber,
+    transcriber: object,
 ) -> str:
     with tempfile.TemporaryDirectory(prefix="mom-from-audio-") as temp_dir:
         wav_path = Path(temp_dir) / "audio.wav"
         transcribe_m4a.convert_m4a_to_wav(audio_path, wav_path)
-        transcript = transcribe_m4a.transcribe_wav(wav_path, transcriber)
+        if getattr(transcriber, "prefers_path", False) is True:
+            transcript = transcriber.transcribe(str(wav_path), verbose=False)
+        else:
+            transcript = transcribe_m4a.transcribe_wav(wav_path, transcriber)
     if not transcript:
         raise transcribe_m4a.TranscriptionError(
-            f"Whisper returned an empty transcription for '{audio_path.name}'."
+            f"STT returned an empty transcription for '{audio_path.name}'."
         )
     return transcript
 
@@ -380,6 +384,7 @@ def run_pipeline(
     registry_path: Path,
     audio_files: Optional[Sequence[Path]] = None,
     language: str = "en",
+    stt: Optional[str] = None,
     omlx_base_url: str = DEFAULT_OMLX_BASE_URL,
     omlx_model: str = DEFAULT_OMLX_MODEL,
     omlx_api_key: Optional[str] = None,
@@ -431,15 +436,16 @@ def run_pipeline(
         print("Nothing new to process.", file=sys.stderr)
         return 0
 
-    # Phase 1: Whisper for all pending audio (model loaded once).
+    # Phase 1: STT for all pending audio (model loaded once).
+    choice = resolve_choice(stt)
     if need_transcript:
         print(
-            f"Transcribing {len(need_transcript)} file(s) with mlx-whisper (Metal)...",
+            f"Transcribing {len(need_transcript)} file(s) with {choice.label} (Metal)...",
             file=sys.stderr,
         )
-        transcriber: Optional[transcribe_m4a.AudioTranscriber] = None
+        transcriber = None
         try:
-            transcriber = transcribe_m4a.AudioTranscriber(language=language)
+            transcriber = get_transcriber(choice.key, language=language)
             for job in need_transcript:
                 print(f"  Transcribe: {job.path.name}", file=sys.stderr)
                 try:
@@ -454,7 +460,7 @@ def run_pipeline(
                 print(f"  Wrote {job.transcript_path}", file=sys.stderr)
         finally:
             if transcriber is not None:
-                print("Releasing Whisper model from memory...", file=sys.stderr)
+                print(f"Releasing {choice.label} from memory...", file=sys.stderr)
                 transcriber.cleanup()
 
     if skip_mom:
@@ -531,11 +537,12 @@ def run_pipeline(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Process .m4a files from a Desktop drop folder: transcribe with Whisper, "
-            "then generate Minutes of Meeting via oMLX. With no arguments, scans "
-            f"{DEFAULT_INBOX}."
+            "Process .m4a files from a Desktop drop folder: transcribe with a local "
+            "MLX STT model, then generate Minutes of Meeting via oMLX. With no "
+            f"arguments, scans {DEFAULT_INBOX}."
         )
     )
+    add_stt_argument(parser)
     parser.add_argument(
         "audio_files",
         nargs="*",
@@ -609,6 +616,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     language = args.language.strip()
     if not language:
         parser.error("--language cannot be empty.")
+    if args.stt and args.save_stt:
+        save_stt(args.stt)
 
     inbox_dir = args.inbox
     output_dir = args.output_dir or (inbox_dir / "output")
@@ -622,6 +631,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             registry_path=registry_path,
             audio_files=explicit,
             language=language,
+            stt=args.stt,
             omlx_base_url=args.omlx_base_url,
             omlx_model=args.omlx_model,
             omlx_api_key=args.omlx_api_key,

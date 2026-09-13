@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transcribe a local M4A audio file with mlx-whisper on Apple GPU."""
+"""Transcribe a local M4A or MP3 audio file with a selectable MLX STT model."""
 
 from __future__ import annotations
 
@@ -12,8 +12,11 @@ import wave
 from pathlib import Path
 from typing import Optional, Sequence, TextIO
 
+from stt import SAMPLE_RATE, add_stt_argument, get_transcriber, resolve_choice, save_stt
 from whisper_mlx import AudioTranscriber as MlxAudioTranscriber
-from whisper_mlx import MODEL_ID, SAMPLE_RATE
+from whisper_mlx import MODEL_ID
+
+SUPPORTED_AUDIO_SUFFIXES = {".m4a", ".mp3"}
 
 
 class TranscriptionError(RuntimeError):
@@ -38,19 +41,19 @@ class AudioTranscriber(MlxAudioTranscriber):
 
 
 def validate_audio_path(value: str) -> Path:
-    """Return an absolute path after validating a local M4A input."""
+    """Return an absolute path after validating a local M4A or MP3 input."""
     audio_path = Path(value).expanduser()
     if not audio_path.exists():
         raise ValueError(f"Audio file not found: {audio_path}")
     if not audio_path.is_file():
         raise ValueError(f"Audio path is not a file: {audio_path}")
-    if audio_path.suffix.lower() != ".m4a":
-        raise ValueError(f"Expected an .m4a audio file: {audio_path}")
+    if audio_path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES:
+        raise ValueError(f"Expected an .m4a or .mp3 audio file: {audio_path}")
     return audio_path.resolve()
 
 
-def convert_m4a_to_wav(audio_path: Path, wav_path: Path) -> None:
-    """Decode M4A audio to 16 kHz, mono, 16-bit PCM WAV with FFmpeg."""
+def convert_audio_to_wav(audio_path: Path, wav_path: Path) -> None:
+    """Decode audio to 16 kHz, mono, 16-bit PCM WAV with FFmpeg."""
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise TranscriptionError(
@@ -91,6 +94,9 @@ def convert_m4a_to_wav(audio_path: Path, wav_path: Path) -> None:
         raise TranscriptionError(f"FFmpeg could not decode '{audio_path}': {details}")
     if not wav_path.is_file() or wav_path.stat().st_size == 0:
         raise TranscriptionError("FFmpeg completed without producing decoded audio.")
+
+
+convert_m4a_to_wav = convert_audio_to_wav
 
 
 def _clean_chunk_transcript(transcript: str) -> str:
@@ -139,8 +145,9 @@ def transcribe_wav(
         audio = audio.astype(np.float32)
         audio /= 32_768.0
 
+    model_name = getattr(transcriber, "model_id", None) or transcriber.__class__.__name__
     print(
-        f"Transcribing {duration:.1f}s with mlx-whisper (Metal)...",
+        f"Transcribing {duration:.1f}s with {model_name} (Metal)...",
         file=progress_stream,
     )
     transcript = _clean_chunk_transcript(
@@ -151,38 +158,48 @@ def transcribe_wav(
     return transcript
 
 
-def transcribe_m4a(audio_path: Path, language: str = "en") -> str:
-    """Decode and transcribe an M4A file, cleaning up all temporary resources."""
-    transcriber: Optional[AudioTranscriber] = None
-    with tempfile.TemporaryDirectory(prefix="transcribe-m4a-") as temp_dir:
+def transcribe_m4a(
+    audio_path: Path,
+    language: str = "en",
+    stt: Optional[str] = None,
+) -> str:
+    """Decode and transcribe an M4A or MP3 file, cleaning up all temporary resources."""
+    choice = resolve_choice(stt)
+    transcriber = None
+    with tempfile.TemporaryDirectory(prefix="transcribe-audio-") as temp_dir:
         wav_path = Path(temp_dir) / "audio.wav"
-        convert_m4a_to_wav(audio_path, wav_path)
+        convert_audio_to_wav(audio_path, wav_path)
 
         try:
-            transcriber = AudioTranscriber(language=language)
-            transcript = transcribe_wav(wav_path, transcriber)
+            transcriber = get_transcriber(choice.key, language=language)
+            if getattr(transcriber, "prefers_path", False) is True:
+                transcript = transcriber.transcribe(str(wav_path), verbose=False)
+            else:
+                transcript = transcribe_wav(wav_path, transcriber)
         except TranscriptionError:
             raise
         except Exception as exc:
-            raise TranscriptionError(f"Whisper transcription failed: {exc}") from exc
+            raise TranscriptionError(f"STT transcription failed: {exc}") from exc
         finally:
             if transcriber is not None:
                 transcriber.cleanup()
 
     if not transcript:
-        raise TranscriptionError("Whisper returned an empty transcription.")
+        raise TranscriptionError("STT returned an empty transcription.")
     return transcript
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Transcribe a local .m4a audio file with mlx-whisper "
-            f"({MODEL_ID}) on Apple GPU. The transcript is printed to stdout "
-            "unless --output is used."
+            "Transcribe a local .m4a or .mp3 audio file with a local MLX STT "
+            "model on Apple GPU. The transcript is printed to stdout unless "
+            "--output is used. Default STT is the saved selection "
+            f"(Whisper turbo remains available: {MODEL_ID})."
         ),
     )
-    parser.add_argument("audio_file", help="Path to the input .m4a file")
+    parser.add_argument("audio_file", help="Path to the input .m4a or .mp3 file")
+    add_stt_argument(parser)
     parser.add_argument(
         "-o",
         "--output",
@@ -192,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--language",
         default="en",
-        help="Whisper language name or code (default: en, matching main_langgraph.py)",
+        help="Language name or code (default: en, matching main_langgraph.py)",
     )
     return parser
 
@@ -209,6 +226,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     language = args.language.strip()
     if not language:
         parser.error("--language cannot be empty.")
+    if args.stt:
+        try:
+            resolve_choice(args.stt)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     output_path = args.output.expanduser() if args.output is not None else None
     if output_path is not None:
@@ -219,8 +241,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if same_file or output_path.resolve() == audio_path:
             parser.error("The output path cannot overwrite the input audio file.")
 
+    if args.stt and args.save_stt:
+        save_stt(args.stt)
+
     try:
-        transcript = transcribe_m4a(audio_path, language=language)
+        transcript = transcribe_m4a(audio_path, language=language, stt=args.stt)
         if output_path is None:
             print(transcript)
         else:

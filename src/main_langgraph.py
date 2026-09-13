@@ -43,58 +43,17 @@ from filename_utils import (
     sanitize_title,
     transcript_audio_matches,
 )
+from stt import (
+    add_stt_argument,
+    cleanup_all,
+    get_transcriber,
+    graph_backend,
+    prompt_stt,
+    resolve_choice,
+    save_stt,
+)
+from voxtral_mlx import VoxtralTranscriber
 from whisper_mlx import AudioTranscriber, SAMPLE_RATE as WHISPER_SAMPLE_RATE
-
-
-class VoxtralTranscriber:
-    """Audio transcription using Voxtral-Mini-3B via mlx-voxtral (Singleton Pattern)"""
-    _instance = None
-
-    def __init__(self):
-        from mlx_voxtral import VoxtralForConditionalGeneration, VoxtralProcessor
-        model_id = "mistralai/Voxtral-Mini-3B-2507"
-        print(f"Loading Voxtral model: {model_id}...")
-        self.model = VoxtralForConditionalGeneration.from_pretrained(model_id)
-        self.processor = VoxtralProcessor.from_pretrained(model_id)
-        print("Voxtral model loaded!")
-
-    @classmethod
-    def get_instance(cls):
-        """Get or create singleton instance"""
-        if cls._instance is None:
-            cls._instance = VoxtralTranscriber()
-        return cls._instance
-
-    @classmethod
-    def cleanup(cls):
-        """Clean up the singleton instance"""
-        if cls._instance is not None:
-            del cls._instance.model
-            del cls._instance.processor
-            cls._instance = None
-            gc.collect()
-
-    def transcribe(self, audio_path: str) -> str:
-        """Transcribe audio file using Voxtral"""
-        try:
-            inputs = self.processor.apply_transcrition_request(
-                audio=audio_path,
-                language="en"
-            )
-            outputs = self.model.generate(
-                input_ids=inputs.input_ids,
-                input_features=inputs.input_features,
-                max_new_tokens=4096,
-                temperature=0.0
-            )
-            transcript = self.processor.decode(
-                outputs[0][inputs.input_ids.shape[1]:],
-                skip_special_tokens=True
-            ).strip()
-            return transcript
-        except Exception as e:
-            print(f"Error in Voxtral transcription: {str(e)}")
-            return ""
 
 
 @dataclass
@@ -608,7 +567,7 @@ def get_video_info(youtube_url: str, output_dir: str = None) -> Tuple[Optional[d
         return None, None
 
 def process_audio_features(audio_data: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Convert audio to 16 kHz mono float32 for mlx-whisper."""
+    """Convert audio to 16 kHz mono float32 for local MLX STT models."""
     # Handle different audio channel configurations
     if len(audio_data.shape) == 1:
         # Already mono
@@ -698,13 +657,14 @@ def process_audio(audio_path: str) -> Tuple[str, dict]:
         print(f"Error processing audio: {str(e)}")
         return "", {}
 
-def transcribe_audio(audio_features: np.ndarray) -> str:
-    """Transcribe a 16 kHz mono waveform with mlx-whisper on Metal."""
+def transcribe_audio(audio_features: np.ndarray, stt_model: Optional[str] = None) -> str:
+    """Transcribe a 16 kHz mono waveform with the selected MLX STT model."""
     if audio_features is None or np.size(audio_features) == 0:
         return ""
-    transcriber = AudioTranscriber.get_instance()
+    choice = resolve_choice(stt_model)
+    transcriber = get_transcriber(choice.key)
     duration = np.size(audio_features) / WHISPER_SAMPLE_RATE
-    print(f"\nTranscribing {duration:.1f}s with mlx-whisper (Metal)...")
+    print(f"\nTranscribing {duration:.1f}s with {choice.label} (Metal)...")
     print("-" * 50)
     try:
         trans = transcriber.transcribe(audio_features, verbose=False)
@@ -921,7 +881,8 @@ class State(TypedDict):
     pascal_speaker_id: Optional[str]  # Which speaker ID is Pascal
     reference_audio_path: Optional[str]  # Path to Pascal reference clip
     pascal_segments: Optional[List[dict]]  # Pascal's segments with transcripts for TTS
-    transcription_backend: Optional[str]  # "whisper" or "voxtral"
+    transcription_backend: Optional[str]  # "whisper" or "voxtral" (graph routing)
+    stt_model: Optional[str]  # selectable STT key: parakeet, whisper-turbo, ...
 
 def extract_radio_mix_videos(url: str) -> list:
     """Extract videos from a Radio/Mix by using yt-dlp with the watch URL"""
@@ -1285,7 +1246,8 @@ def diarize_node(state: State) -> dict:
 
 def transcribe_node(state: State) -> dict:
     """Transcribe audio - either full or Pascal-only segments"""
-    backend = state.get("transcription_backend") or "whisper"
+    stt_model = state.get("stt_model")
+    backend = state.get("transcription_backend") or graph_backend(resolve_choice(stt_model))
 
     # Voxtral backend: takes audio file path directly, no chunking needed
     if backend == "voxtral":
@@ -1295,7 +1257,7 @@ def transcribe_node(state: State) -> dict:
         transcript = VoxtralTranscriber.get_instance().transcribe(state["audio_path"])
         return {"transcript": transcript}
 
-    # Whisper backend (default)
+    # Feature-based backends (Whisper, Parakeet, Qwen3-ASR)
     audio_features = state.get("audio_features")
     if audio_features is None or np.size(audio_features) == 0:
         return {"transcript": None, "pascal_segments": state.get("pascal_segments")}
@@ -1310,7 +1272,7 @@ def transcribe_node(state: State) -> dict:
         print(f"\nTranscribing {len(pascal_segments)} Pascal segments...")
         print("-" * 50)
 
-        transcriber = AudioTranscriber.get_instance()
+        transcriber = get_transcriber(stt_model)
         transcribed_segments = []
 
         for i, seg in enumerate(pascal_segments, 1):
@@ -1371,7 +1333,7 @@ def transcribe_node(state: State) -> dict:
         }
     else:
         # Standard full transcription (no diarization)
-        transcript = transcribe_audio(state["audio_features"])
+        transcript = transcribe_audio(state["audio_features"], stt_model)
     return {"transcript": transcript}
 
 def save_node(state: State) -> dict:
@@ -1562,8 +1524,7 @@ def finalize_node(state: State) -> dict:
         print(f"  Output: {state['output_dir']}/segments/")
 
     # Clean up transcriber singletons at the end
-    AudioTranscriber.cleanup_singleton()
-    VoxtralTranscriber.cleanup()
+    cleanup_all()
     # Clean up diarizer singleton
     DiarizerManager.cleanup()
     DemucsManager.cleanup()
@@ -1658,6 +1619,7 @@ Examples:
     parser.add_argument('-d', '--dir', type=str, help='Directory of local video files to batch process')
     parser.add_argument('-m', '--mode', type=str, choices=['1', '2', '3', '4'],
                         help='Mode: 1=Audio only, 2=Audio+Transcription, 3=Speaker diarization+TTS, 4=Audio+Voxtral')
+    add_stt_argument(parser)
     parser.add_argument('--save-video', action='store_true',
                         help='Also save the video file in mp4 format')
     args = parser.parse_args()
@@ -1705,7 +1667,21 @@ Examples:
     audio_only = mode == '1'
     diarization_mode = mode == '3'
     voxtral_mode = mode == '4'
-    transcription_backend = "voxtral" if voxtral_mode else "whisper"
+
+    if args.stt:
+        stt_model = resolve_choice(args.stt).key
+    elif voxtral_mode:
+        stt_model = "voxtral"
+    elif audio_only:
+        stt_model = resolve_choice().key
+    elif args.mode:
+        stt_model = resolve_choice().key
+    else:
+        stt_model = prompt_stt()
+    if args.save_stt:
+        save_stt(stt_model)
+    stt_choice = resolve_choice(stt_model)
+    transcription_backend = graph_backend(stt_choice)
 
     # Determine whether to save video
     if args.save_video:
@@ -1716,8 +1692,8 @@ Examples:
 
     if audio_only:
         print("Audio-only mode: will download audio without transcription")
-    elif voxtral_mode:
-        print("Voxtral mode: will transcribe using Voxtral-Mini-3B-2507")
+    else:
+        print(f"STT: {stt_choice.label} ({stt_choice.model_id})")
     if save_video:
         print("Video save enabled: will also download video as mp4")
 
@@ -1778,7 +1754,8 @@ Examples:
         "pascal_speaker_id": None,
         "reference_audio_path": reference_audio_path,
         "pascal_segments": None,
-        "transcription_backend": transcription_backend
+        "transcription_backend": transcription_backend,
+        "stt_model": stt_model,
     }
     # Resolve the playlist first so the graph recursion limit can scale with size.
     # Full pipeline is ~9 node visits per video; a fixed 1000 cap dies around video 111.

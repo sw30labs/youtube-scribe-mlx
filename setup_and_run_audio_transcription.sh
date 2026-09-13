@@ -7,18 +7,20 @@ TRANSCRIBE_SCRIPT="${SCRIPT_DIR}/src/transcribe_m4a.py"
 VENV_DIR="${VENV_DIR:-${SCRIPT_DIR}/.venv}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_PYTHON="${VENV_DIR}/bin/python"
-DEPENDENCY_CHECK='import numpy, mlx_whisper'
+DEPENDENCY_CHECK='import numpy, mlx_whisper, mlx_audio'
 
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") AUDIO_FILE.m4a [TRANSCRIPTION_OPTIONS]
+Usage: $(basename "$0") AUDIO_FILE.(m4a|mp3) [TRANSCRIPTION_OPTIONS]
 
-Set up a local Python environment and transcribe an M4A audio file.
+Set up a local Python environment and transcribe an M4A or MP3 audio file.
 
 Options forwarded to transcribe_m4a.py:
   -o, --output PATH       Write the transcript to a UTF-8 text file
-  --language LANGUAGE     Whisper language name or code (default: en)
+  --language LANGUAGE     Language name or code (default: en)
+  --stt MODEL             STT model (parakeet, whisper-turbo, whisper-large, qwen3-asr, voxtral)
+  --save-stt              Remember --stt as the default
   -h, --help              Show this help message
 
 Environment overrides:
@@ -27,7 +29,7 @@ Environment overrides:
 
 Examples:
   $(basename "$0") /path/to/audio.m4a
-  $(basename "$0") /path/to/audio.m4a --output transcript.txt
+  $(basename "$0") /path/to/audio.mp3 --output transcript.txt
   $(basename "$0") /path/to/audio.m4a --language es
 EOF
 }
@@ -131,7 +133,7 @@ ensure_python_dependencies() {
 
     log "Installing Python transcription dependencies..."
     "${VENV_PYTHON}" -m pip install --upgrade pip >&2
-    "${VENV_PYTHON}" -m pip install --upgrade numpy mlx mlx-whisper >&2
+    "${VENV_PYTHON}" -m pip install --upgrade numpy mlx mlx-whisper mlx-audio >&2
 
     if ! "${VENV_PYTHON}" -c "${DEPENDENCY_CHECK}" >/dev/null 2>&1; then
         die "Python dependencies were installed but could not be imported."
@@ -154,8 +156,8 @@ main() {
 
     [[ -f "${audio_file}" ]] || die "Audio file not found: ${audio_file}"
     case "${audio_file}" in
-        *.[mM]4[aA]) ;;
-        *) die "Expected an .m4a audio file: ${audio_file}" ;;
+        *.[mM]4[aA]|*.[mM][pP]3) ;;
+        *) die "Expected an .m4a or .mp3 audio file: ${audio_file}" ;;
     esac
     [[ -f "${TRANSCRIBE_SCRIPT}" ]] || die "Transcription script not found: ${TRANSCRIBE_SCRIPT}"
 

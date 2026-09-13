@@ -148,7 +148,7 @@ class SetupAndRunTests(unittest.TestCase):
         self.assertEqual(pip_commands[0], "-m pip install --upgrade pip")
         self.assertEqual(
             pip_commands[1],
-            "-m pip install --upgrade numpy mlx mlx-whisper",
+            "-m pip install --upgrade numpy mlx mlx-whisper mlx-audio",
         )
         self.assertTrue(self.deps_marker.exists())
 
@@ -188,6 +188,16 @@ class SetupAndRunTests(unittest.TestCase):
         self.assertIn("Audio file not found", result.stderr)
         self.assertFalse(self.arg_log.exists())
         self.assertFalse(self.pip_log.exists())
+
+    def test_accepts_mp3_input(self):
+        audio_path = self.temp_path / "audio recording.mp3"
+        audio_path.touch()
+
+        result = self.run_script(audio_path)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.arg_log.exists())
+        self.assertIn(str(audio_path), self.arg_log.read_text(encoding="utf-8"))
 
     def test_help_does_not_run_setup(self):
         result = self.run_script("--help")

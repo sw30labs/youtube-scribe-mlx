@@ -22,7 +22,7 @@ flowchart TD
 
     H -->|Mode 1| I[Audio Only<br/>Save .wav]
 
-    H -->|Mode 2| J[Whisper large-v3-turbo<br/>Local MLX inference]
+    H -->|Mode 2| J[Selectable MLX STT<br/>Parakeet / Whisper / Qwen3]
     J --> K[Transcript<br/>.json + .txt]
 
     H -->|Mode 3| L[pyannote.audio<br/>Speaker Diarization]
@@ -45,10 +45,11 @@ flowchart TD
 - **Video & Playlist Support**: Process individual YouTube videos, playlists, Radio/Mix playlists, or local video files
 - **Multiple Transcription Modes**:
   - **Mode 1** — Audio only (download without transcription)
-  - **Mode 2** — Audio + Transcription (local Whisper, default)
+  - **Mode 2** — Audio + Transcription (selectable local STT; Parakeet default, Whisper turbo still available)
   - **Mode 3** — Speaker diarization + TTS dataset preparation (using pyannote.audio)
   - **Mode 4** — Audio + Voxtral transcription (using Voxtral-Mini-3B via MLX)
-- **Apple Silicon Optimized**: Whisper runs on the Apple GPU via mlx-whisper (Metal). Demucs and pyannote still use PyTorch MPS.
+- **Apple Silicon Optimized**: STT runs on the Apple GPU via mlx-whisper / mlx-audio (Metal). Demucs and pyannote still use PyTorch MPS.
+- **Selectable STT**: Parakeet TDT 0.6B v3 (recommended default), Whisper large-v3-turbo (previous default), Whisper large-v3, Qwen3-ASR 1.7B, Voxtral Mini 3B. YouTubeToText shows the picker first; CLI uses `--stt` or `STT_MODEL`.
 - **YouTube Premium Support**: Uses browser cookies for authenticated downloads (highest available audio quality)
 - **TTS Dataset Utilities**: Build Qwen3-TTS fine-tuning datasets from diarized segments or raw WAV recordings
 - **OpenAI API Variant**: Alternative transcription backend using OpenAI's Whisper API instead of local models
@@ -86,7 +87,7 @@ flowchart TD
    conda install -c conda-forge streamlit yt-dlp numpy scipy
    
    # Install MLX for Apple Silicon acceleration
-   pip install mlx mlx-whisper
+   pip install mlx mlx-whisper mlx-audio
    
    # Install transformers (diarization / Demucs still use PyTorch)
    pip install transformers[torch]
@@ -123,18 +124,23 @@ python src/main_langgraph.py -u "https://youtube.com/watch?v=..." -m 3
 # Voxtral transcription
 python src/main_langgraph.py -u "https://youtube.com/watch?v=..." -m 4
 
+# Choose STT (Parakeet is the saved/default; Whisper turbo is still available)
+python src/main_langgraph.py -u "https://youtube.com/watch?v=..." --stt parakeet
+python src/main_langgraph.py -u "https://youtube.com/watch?v=..." --stt whisper-turbo --save-stt
+
 # Local video file or folder
 python src/main_langgraph.py -f /path/to/video.mp4
 python src/main_langgraph.py -d /path/to/videos/
 ```
 
-### Transcribe a local M4A file
+### Transcribe a local M4A or MP3 file
 
-Use the focused M4A CLI when you already have an audio file and only need its
-transcription. The transcript is printed to stdout:
+Use the focused local-audio CLI when you already have an `.m4a` or `.mp3` file
+and only need its transcription. The transcript is printed to stdout:
 
 ```bash
 python src/transcribe_m4a.py /path/to/audio.m4a
+python src/transcribe_m4a.py /path/to/audio.mp3
 ```
 
 ### Drop-folder MoM pipeline (daily use)
@@ -179,6 +185,7 @@ Write the transcript to a text file instead:
 
 ```bash
 python src/transcribe_m4a.py /path/to/audio.m4a --output transcript.txt
+python src/transcribe_m4a.py /path/to/audio.mp3 --output transcript.txt
 ```
 
 Or use the setup wrapper to create/reuse `.venv`, install the focused Python
@@ -189,9 +196,10 @@ wrapper requires Python 3.9 or newer:
 ./setup_and_run_audio_transcription.sh /path/to/audio.m4a --output transcript.txt
 ```
 
-The command uses `mlx-community/whisper-large-v3-turbo` via mlx-whisper on
-the Apple GPU (Metal), defaults to English (matching the main pipeline), and
-accepts `--language` for other Whisper languages.
+The command uses the saved STT selection (built-in default:
+`mlx-community/parakeet-tdt-0.6b-v3` via mlx-audio). Whisper
+`mlx-community/whisper-large-v3-turbo` remains available with `--stt whisper-turbo`.
+Pass `--language` for non-English Whisper/Qwen runs.
 
 ### OpenAI API Variant
 
@@ -242,16 +250,20 @@ For playlists, a subdirectory with the playlist name is created containing all v
 
 ## Models
 
-- **`mlx-community/whisper-large-v3-turbo`** — Local Whisper transcription via mlx-whisper on Metal (modes 2, 3, and TTS dataset builder)
-- **`mistralai/Voxtral-Mini-3B-2507`** — Voxtral transcription via MLX (mode 4)
+- **`mlx-community/parakeet-tdt-0.6b-v3`** — Recommended default STT via mlx-audio (Metal)
+- **`mlx-community/whisper-large-v3-turbo`** — Previous default, still selectable (`--stt whisper-turbo`)
+- **`mlx-community/whisper-large-v3-mlx`** — Full Whisper large-v3 (`--stt whisper-large`)
+- **`mlx-community/Qwen3-ASR-1.7B-8bit`** — Multilingual / CJK STT (`--stt qwen3-asr`)
+- **`mistralai/Voxtral-Mini-3B-2507`** — Voxtral transcription via MLX (mode 4 / `--stt voxtral`)
 - **`pyannote/speaker-diarization-3.1`** — Speaker diarization (mode 3)
 - **`whisper-1`** — OpenAI API transcription (OpenAI variant only)
 
 ## Performance Notes
 
-- Whisper STT uses mlx-whisper on the Apple GPU (Metal), not PyTorch CPU/MPS
-- Processing time depends on video length and system performance
-- Long audio is windowed inside mlx-whisper (with previous-text conditioning)
+- STT uses mlx-whisper or mlx-audio on the Apple GPU (Metal), not PyTorch CPU/MPS
+- Processing time depends on video length, the selected STT model, and system performance
+- Whisper windows long audio internally; Parakeet is chunked at 120s with 15s overlap
+- Whisper runs with `condition_on_previous_text=False` to reduce long-video loops
 
 ## Troubleshooting
 
