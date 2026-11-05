@@ -4,3 +4,4 @@ yt-dlp==2026.10.26
 numpy==2.5.4
 scipy==1.18.1
 langgraph==1.2.19
+requests==2.33.0  # VulnOps CVE-2026-25645: transitive dependency floor
