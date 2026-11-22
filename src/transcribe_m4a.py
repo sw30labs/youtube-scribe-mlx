@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transcribe a local M4A or MP3 audio file with a selectable MLX STT model."""
+"""Transcribe a local M4A, MP3, or WAV audio file with a selectable MLX STT model."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from stt import SAMPLE_RATE, add_stt_argument, get_transcriber, resolve_choice, 
 from whisper_mlx import AudioTranscriber as MlxAudioTranscriber
 from whisper_mlx import MODEL_ID
 
-SUPPORTED_AUDIO_SUFFIXES = {".m4a", ".mp3"}
+SUPPORTED_AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav"}
 
 
 class TranscriptionError(RuntimeError):
@@ -41,14 +41,14 @@ class AudioTranscriber(MlxAudioTranscriber):
 
 
 def validate_audio_path(value: str) -> Path:
-    """Return an absolute path after validating a local M4A or MP3 input."""
+    """Return an absolute path after validating a local M4A, MP3, or WAV input."""
     audio_path = Path(value).expanduser()
     if not audio_path.exists():
         raise ValueError(f"Audio file not found: {audio_path}")
     if not audio_path.is_file():
         raise ValueError(f"Audio path is not a file: {audio_path}")
     if audio_path.suffix.lower() not in SUPPORTED_AUDIO_SUFFIXES:
-        raise ValueError(f"Expected an .m4a or .mp3 audio file: {audio_path}")
+        raise ValueError(f"Expected an .m4a, .mp3, or .wav audio file: {audio_path}")
     return audio_path.resolve()
 
 
@@ -192,13 +192,13 @@ def transcribe_m4a(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Transcribe a local .m4a or .mp3 audio file with a local MLX STT "
+            "Transcribe a local .m4a, .mp3, or .wav audio file with a local MLX STT "
             "model on Apple GPU. The transcript is printed to stdout unless "
             "--output is used. Default STT is the saved selection "
             f"(Whisper turbo remains available: {MODEL_ID})."
         ),
     )
-    parser.add_argument("audio_file", help="Path to the input .m4a or .mp3 file")
+    parser.add_argument("audio_file", help="Path to the input .m4a, .mp3, or .wav file")
     add_stt_argument(parser)
     parser.add_argument(
         "-o",

@@ -42,12 +42,22 @@ class ValidateAudioPathTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not found"):
             transcribe_m4a.validate_audio_path("missing.m4a")
 
-    def test_rejects_unsupported_audio_file(self):
+    def test_accepts_existing_wav_case_insensitively(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = Path(temp_dir) / "recording.wav"
+            audio_path = Path(temp_dir) / "recording.WAV"
             audio_path.touch()
 
-            with self.assertRaisesRegex(ValueError, r"Expected an \.m4a or \.mp3"):
+            self.assertEqual(
+                transcribe_m4a.validate_audio_path(str(audio_path)),
+                audio_path.resolve(),
+            )
+
+    def test_rejects_unsupported_audio_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "recording.txt"
+            audio_path.touch()
+
+            with self.assertRaisesRegex(ValueError, r"Expected an \.m4a, \.mp3, or \.wav"):
                 transcribe_m4a.validate_audio_path(str(audio_path))
 
 

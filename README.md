@@ -49,7 +49,7 @@ flowchart TD
   - **Mode 3** — Speaker diarization + TTS dataset preparation (using pyannote.audio)
   - **Mode 4** — Audio + Voxtral transcription (using Voxtral-Mini-3B via MLX)
 - **Apple Silicon Optimized**: STT runs on the Apple GPU via mlx-whisper / mlx-audio (Metal). Demucs and pyannote still use PyTorch MPS.
-- **Selectable STT**: Parakeet TDT 0.6B v3 (recommended default), Whisper large-v3-turbo (previous default), Whisper large-v3, Qwen3-ASR 1.7B, Voxtral Mini 3B. YouTubeToText shows the picker first; CLI uses `--stt` or `STT_MODEL`.
+- **Selectable STT**: Parakeet TDT 0.6B v3 (recommended default), Whisper large-v3-turbo (previous default), Whisper large-v3, Qwen3-ASR 1.7B, Voxtral Mini 3B, Nemotron 3.5 Transcribe 30B-A4B. YouTubeToText shows the picker first; CLI uses `--stt` or `STT_MODEL`.
 - **YouTube Premium Support**: Uses browser cookies for authenticated downloads (highest available audio quality)
 - **TTS Dataset Utilities**: Build Qwen3-TTS fine-tuning datasets from diarized segments or raw WAV recordings
 - **OpenAI API Variant**: Alternative transcription backend using OpenAI's Whisper API instead of local models
@@ -87,7 +87,7 @@ flowchart TD
    conda install -c conda-forge streamlit yt-dlp numpy scipy
    
    # Install MLX for Apple Silicon acceleration
-   pip install mlx mlx-whisper mlx-audio
+   pip install mlx mlx-whisper 'mlx-audio>=0.6.3'
    
    # Install transformers (diarization / Demucs still use PyTorch)
    pip install transformers[torch]
@@ -201,6 +201,13 @@ The command uses the saved STT selection (built-in default:
 `mlx-community/whisper-large-v3-turbo` remains available with `--stt whisper-turbo`.
 Pass `--language` for non-English Whisper/Qwen runs.
 
+Nemotron 3.5 Transcribe has its own wrapper. It uses the `youtube` conda env
+when that env can import the model, and otherwise creates `.venv-nemotron`:
+
+```bash
+./setup_and_run_nemotron.sh /path/to/audio.wav --output transcript.txt
+```
+
 ### OpenAI API Variant
 
 Uses the OpenAI Whisper API instead of local models. Works on any machine (no GPU required), but requires an API key:
@@ -255,6 +262,7 @@ For playlists, a subdirectory with the playlist name is created containing all v
 - **`mlx-community/whisper-large-v3-mlx`** — Full Whisper large-v3 (`--stt whisper-large`)
 - **`mlx-community/Qwen3-ASR-1.7B-8bit`** — Multilingual / CJK STT (`--stt qwen3-asr`)
 - **`mistralai/Voxtral-Mini-3B-2507`** — Voxtral transcription via MLX (mode 4 / `--stt voxtral`)
+- **`nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B`** — Nemotron 3.5 Transcribe, 40 languages, recordings up to 1 hour (`--stt nemotron`). Needs `mlx-audio>=0.6.3`. The BF16 checkpoint is about 66 GB. Set `NEMOTRON_STT_MODEL` to a 4-bit MLX repo or local folder to load a smaller build instead.
 - **`pyannote/speaker-diarization-3.1`** — Speaker diarization (mode 3)
 - **`whisper-1`** — OpenAI API transcription (OpenAI variant only)
 
@@ -263,6 +271,7 @@ For playlists, a subdirectory with the playlist name is created containing all v
 - STT uses mlx-whisper or mlx-audio on the Apple GPU (Metal), not PyTorch CPU/MPS
 - Processing time depends on video length, the selected STT model, and system performance
 - Whisper windows long audio internally; Parakeet is chunked at 120s with 15s overlap
+- Nemotron 3.5 Transcribe encodes the whole recording in one pass (up to 1 hour) and keeps the spoken language. It does not take the language code as a translation target unless you call the model outside this STT option.
 - Whisper runs with `condition_on_previous_text=False` to reduce long-video loops
 
 ## Troubleshooting

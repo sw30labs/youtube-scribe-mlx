@@ -19,7 +19,7 @@ Set up a local Python environment and transcribe an M4A or MP3 audio file.
 Options forwarded to transcribe_m4a.py:
   -o, --output PATH       Write the transcript to a UTF-8 text file
   --language LANGUAGE     Language name or code (default: en)
-  --stt MODEL             STT model (parakeet, whisper-turbo, whisper-large, qwen3-asr, voxtral)
+  --stt MODEL             STT model (parakeet, whisper-turbo, whisper-large, qwen3-asr, voxtral, nemotron)
   --save-stt              Remember --stt as the default
   -h, --help              Show this help message
 
@@ -133,7 +133,7 @@ ensure_python_dependencies() {
 
     log "Installing Python transcription dependencies..."
     "${VENV_PYTHON}" -m pip install --upgrade pip >&2
-    "${VENV_PYTHON}" -m pip install --upgrade numpy mlx mlx-whisper mlx-audio >&2
+    "${VENV_PYTHON}" -m pip install --upgrade numpy mlx mlx-whisper 'mlx-audio>=0.6.3' >&2
 
     if ! "${VENV_PYTHON}" -c "${DEPENDENCY_CHECK}" >/dev/null 2>&1; then
         die "Python dependencies were installed but could not be imported."

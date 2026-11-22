@@ -148,7 +148,7 @@ class SetupAndRunTests(unittest.TestCase):
         self.assertEqual(pip_commands[0], "-m pip install --upgrade pip")
         self.assertEqual(
             pip_commands[1],
-            "-m pip install --upgrade numpy mlx mlx-whisper mlx-audio",
+            "-m pip install --upgrade numpy mlx mlx-whisper mlx-audio>=0.6.3",
         )
         self.assertTrue(self.deps_marker.exists())
 

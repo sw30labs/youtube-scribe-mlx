@@ -25,7 +25,6 @@ import re
 import json
 import argparse
 import subprocess
-import yt_dlp
 import numpy as np
 from typing import Any, List, Tuple, Dict, Optional, TypedDict, Annotated
 from scipy.io import wavfile
@@ -43,6 +42,7 @@ from filename_utils import (
     sanitize_title,
     transcript_audio_matches,
 )
+from ytdlp_opts import extract_info, ytdlp_base_opts
 from stt import (
     add_stt_argument,
     cleanup_all,
@@ -375,20 +375,14 @@ def download_video(youtube_url: str, output_dir: str, info: Optional[dict] = Non
             if existing:
                 print(f"Reusing existing video: {existing}")
                 return existing
-        ydl_opts = {
-            'format': 'bestvideo+bestaudio/best',
-            'merge_output_format': 'mp4',
-            'outtmpl': os.path.join(output_dir, '%(title)s.%(ext)s'),
-            'quiet': False,
-            'no_warnings': False,
-            'cookiesfrombrowser': ('chrome',),
-            'remote_components': ['ejs:github'],
-            # yt-dlp defaults to deno only; enable node so the n-challenge
-            # can be solved on machines without deno installed
-            'js_runtimes': {'deno': {}, 'node': {}},
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=True)
+        ydl_opts = ytdlp_base_opts(
+            format='bestvideo+bestaudio/best',
+            merge_output_format='mp4',
+            outtmpl=os.path.join(output_dir, '%(title)s.%(ext)s'),
+            quiet=False,
+            no_warnings=False,
+        )
+        info, ydl = extract_info(ydl_opts, youtube_url, download=True)
         if not info:
             print("Failed to download video.")
             return None
@@ -507,23 +501,18 @@ def get_video_info(youtube_url: str, output_dir: str = None) -> Tuple[Optional[d
     try:
         # Clean URL to remove playlist parameters for single video downloads
         youtube_url = clean_video_url(youtube_url)
-        # Configure yt-dlp options for highest quality audio
-        # Uses Safari cookies for YouTube Premium (256kbps AAC) when available
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'postprocessors': [{
+        # Highest-quality audio. Browser cookies are used when readable
+        # (YouTube Premium 256kbps AAC); otherwise yt-dlp runs logged-out.
+        ydl_opts = ytdlp_base_opts(
+            format='bestaudio/best',
+            postprocessors=[{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
                 'preferredquality': '0',  # 0 = best quality (lossless for WAV)
             }],
-            'quiet': False,
-            'no_warnings': False,
-            'cookiesfrombrowser': ('chrome',),
-            'remote_components': ['ejs:github'],
-            # yt-dlp defaults to deno only; enable node so the n-challenge
-            # can be solved on machines without deno installed
-            'js_runtimes': {'deno': {}, 'node': {}},
-        }
+            quiet=False,
+            no_warnings=False,
+        )
 
         # If output_dir is provided, save WAV there, otherwise use temp file
         if output_dir:
@@ -536,8 +525,7 @@ def get_video_info(youtube_url: str, output_dir: str = None) -> Tuple[Optional[d
             meta_opts = {k: v for k, v in ydl_opts.items() if k != 'postprocessors'}
             meta_opts['quiet'] = True
             meta_opts['no_warnings'] = True
-            with yt_dlp.YoutubeDL(meta_opts) as ydl:
-                info = ydl.extract_info(youtube_url, download=False)
+            info, _ = extract_info(meta_opts, youtube_url, download=False)
             if not info:
                 print("Failed to extract video info.")
                 return None, None
@@ -546,8 +534,7 @@ def get_video_info(youtube_url: str, output_dir: str = None) -> Tuple[Optional[d
                 print(f"Reusing existing audio: {existing}")
                 return info, existing
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(youtube_url, download=True)
+            info, ydl = extract_info(ydl_opts, youtube_url, download=True)
             if not info:
                 print("Failed to extract video info.")
                 return None, None
@@ -559,8 +546,7 @@ def get_video_info(youtube_url: str, output_dir: str = None) -> Tuple[Optional[d
         else:
             # Use temporary file
             ydl_opts['outtmpl'] = 'temp_audio'
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(youtube_url, download=True)
+            info, _ = extract_info(ydl_opts, youtube_url, download=True)
             return info, 'temp_audio.wav'
     except Exception as e:
         print(f"Error downloading video: {str(e)}")
@@ -841,18 +827,13 @@ def is_playlist_url(url: str, force_playlist: bool = False) -> bool:
     return 'playlist' in url
 
 def extract_playlist_info(playlist_url: str) -> dict:
-    ydl_opts = {
-        'quiet': True,
-        'extract_flat': True,
-        'no_warnings': True,
-        'cookiesfrombrowser': ('chrome',),
-        'remote_components': ['ejs:github'],
-        # yt-dlp defaults to deno only; enable node so the n-challenge
-        # can be solved on machines without deno installed
-        'js_runtimes': {'deno': {}, 'node': {}},
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(playlist_url, download=False)
+    ydl_opts = ytdlp_base_opts(
+        quiet=True,
+        extract_flat=True,
+        no_warnings=True,
+    )
+    info, _ = extract_info(ydl_opts, playlist_url, download=False)
+    return info
 
 class State(TypedDict):
     url: str
@@ -882,29 +863,23 @@ class State(TypedDict):
     reference_audio_path: Optional[str]  # Path to Pascal reference clip
     pascal_segments: Optional[List[dict]]  # Pascal's segments with transcripts for TTS
     transcription_backend: Optional[str]  # "whisper" or "voxtral" (graph routing)
-    stt_model: Optional[str]  # selectable STT key: parakeet, whisper-turbo, ...
+    stt_model: Optional[str]  # selectable STT key: parakeet, whisper-turbo, nemotron, ...
 
 def extract_radio_mix_videos(url: str) -> list:
     """Extract videos from a Radio/Mix by using yt-dlp with the watch URL"""
-    ydl_opts = {
-        'quiet': True,
-        'extract_flat': 'in_playlist',
-        'no_warnings': True,
-        'noplaylist': False,  # Allow playlist extraction
-        'cookiesfrombrowser': ('chrome',),
-        'remote_components': ['ejs:github'],
-        # yt-dlp defaults to deno only; enable node so the n-challenge
-        # can be solved on machines without deno installed
-        'js_runtimes': {'deno': {}, 'node': {}},
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        if info and 'entries' in info:
-            return [(entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}", 
-                     entry.get('title', 'unknown')) for entry in info.get('entries', []) if entry]
-        elif info:
-            # Single video fallback
-            return [(url, info.get('title', 'unknown'))]
+    ydl_opts = ytdlp_base_opts(
+        quiet=True,
+        extract_flat='in_playlist',
+        no_warnings=True,
+        noplaylist=False,  # Allow playlist extraction
+    )
+    info, _ = extract_info(ydl_opts, url, download=False)
+    if info and 'entries' in info:
+        return [(entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id')}",
+                 entry.get('title', 'unknown')) for entry in info.get('entries', []) if entry]
+    elif info:
+        # Single video fallback
+        return [(url, info.get('title', 'unknown'))]
     return []
 
 def start_node(state: State) -> dict:

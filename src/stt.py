@@ -11,7 +11,7 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
@@ -21,6 +21,8 @@ CONFIG_NAME = ".stt.json"
 GLOBAL_CONFIG = Path.home() / ".config" / "mlx-youtube-scribe" / "stt.json"
 SAMPLE_RATE = 16_000
 DEFAULT_STT = "parakeet"
+NEMOTRON_MODEL_ID = "nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"
+NEMOTRON_MODEL_ENV = "NEMOTRON_STT_MODEL"
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,8 @@ class SttChoice:
     chunk_duration: Optional[float] = None
     overlap_duration: Optional[float] = None
     language_style: str = "code"
+    max_tokens: Optional[int] = None
+    task: Optional[str] = None
 
 
 STT_CHOICES: dict[str, SttChoice] = {
@@ -85,6 +89,18 @@ STT_CHOICES: dict[str, SttChoice] = {
         languages="Multiple",
         language_style="code",
     ),
+    "nemotron": SttChoice(
+        key="nemotron",
+        label="Nemotron 3.5 Transcribe 30B-A4B",
+        app_label="Nemotron 3.5 Transcribe 30B-A4B — 40 languages, up to 1 hour (~66 GB)",
+        backend="mlx-audio",
+        model_id=NEMOTRON_MODEL_ID,
+        languages="40 languages, recordings up to 1 hour",
+        # language selects a translation target on this model, not the spoken language
+        language_style="none",
+        max_tokens=16384,
+        task="asr",
+    ),
 }
 
 APP_LABELS = {choice.app_label: choice.key for choice in STT_CHOICES.values()}
@@ -96,6 +112,10 @@ _ALIASES = {
     "whisper-large-v3": "whisper-large",
     "qwen": "qwen3-asr",
     "qwen3": "qwen3-asr",
+    "nemotron-transcribe": "nemotron",
+    "nemotron-3.5": "nemotron",
+    "nemotron3.5": "nemotron",
+    "nvidia/nvidia-nemotron-3.5-transcribe-30b-a4b": "nemotron",
 }
 
 
@@ -169,6 +189,16 @@ def resolve_choice(
 
 def graph_backend(choice: SttChoice) -> str:
     return "voxtral" if choice.backend == "voxtral" else "whisper"
+
+
+def effective_choice(choice: SttChoice) -> SttChoice:
+    """Apply runtime overrides. NEMOTRON_STT_MODEL can point at a 4-bit MLX build."""
+    if choice.key != "nemotron":
+        return choice
+    override = os.environ.get(NEMOTRON_MODEL_ENV, "").strip()
+    if not override or override == choice.model_id:
+        return choice
+    return replace(choice, model_id=override)
 
 
 def save_stt(
@@ -252,7 +282,7 @@ def get_transcriber(
     try:
         return _make_transcriber(choice, language=language)
     except ImportError as exc:
-        if choice.key == "whisper-turbo":
+        if choice.key in {"whisper-turbo", "nemotron"}:
             raise
         print(
             f"STT '{choice.key}' is unavailable ({exc}). "
@@ -263,6 +293,7 @@ def get_transcriber(
 
 
 def _make_transcriber(choice: SttChoice, *, language: str) -> Any:
+    choice = effective_choice(choice)
     if choice.backend == "whisper":
         from whisper_mlx import AudioTranscriber
 

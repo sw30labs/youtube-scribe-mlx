@@ -75,3 +75,55 @@ class MlxAudioTranscriberTests(unittest.TestCase):
         self.assertEqual(call["language"], "English")
         self.assertEqual(call["chunk_duration"], 600.0)
         self.assertEqual(call["audio"], "/tmp/a.wav")
+
+    def test_nemotron_sends_asr_task_without_language_or_chunks(self):
+        class NemotronModel:
+            def __init__(self):
+                self.calls = []
+
+            def generate(self, audio, *, max_tokens=1024, task="asr", verbose=False):
+                self.calls.append(
+                    {
+                        "audio": audio,
+                        "max_tokens": max_tokens,
+                        "task": task,
+                        "verbose": verbose,
+                    }
+                )
+                return types.SimpleNamespace(text="  hello nemotron  ")
+
+        model = NemotronModel()
+        fake_mx = types.SimpleNamespace(array=lambda data: data)
+        with mock.patch.object(
+            mlx_audio_stt,
+            "_import_mlx_audio_stt",
+            return_value=(fake_mx, mock.Mock(return_value=model)),
+        ):
+            transcriber = mlx_audio_stt.MlxAudioTranscriber(
+                stt.STT_CHOICES["nemotron"], language="es"
+            )
+            text = transcriber.transcribe(np.zeros(8, dtype=np.float32), verbose=False)
+
+        call = model.calls[0]
+        self.assertEqual(call["task"], "asr")
+        self.assertEqual(call["max_tokens"], stt.STT_CHOICES["nemotron"].max_tokens)
+        self.assertFalse(call["verbose"])
+        self.assertEqual(text, "hello nemotron")
+        self.assertNotIn("language", call)
+        self.assertNotIn("chunk_duration", call)
+
+    def test_nemotron_rejects_audio_longer_than_one_hour(self):
+        model = FakeModel()
+        fake_mx = types.SimpleNamespace(array=lambda data: data)
+        with mock.patch.object(
+            mlx_audio_stt,
+            "_import_mlx_audio_stt",
+            return_value=(fake_mx, mock.Mock(return_value=model)),
+        ):
+            transcriber = mlx_audio_stt.MlxAudioTranscriber(
+                stt.STT_CHOICES["nemotron"], language="en"
+            )
+            with mock.patch.object(mlx_audio_stt, "NEMOTRON_MAX_SECONDS", 0):
+                with self.assertRaisesRegex(ValueError, "up to"):
+                    transcriber.transcribe(np.zeros(8, dtype=np.float32))
+        self.assertEqual(model.calls, [])

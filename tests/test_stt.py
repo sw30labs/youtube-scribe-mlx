@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -26,10 +27,22 @@ class SttCatalogTests(unittest.TestCase):
             stt.STT_CHOICES["whisper-large"].model_id,
             "mlx-community/whisper-large-v3-mlx",
         )
+        nemotron = stt.STT_CHOICES["nemotron"]
+        self.assertEqual(nemotron.model_id, stt.NEMOTRON_MODEL_ID)
+        self.assertEqual(nemotron.backend, "mlx-audio")
+        self.assertEqual(nemotron.task, "asr")
+        self.assertEqual(nemotron.language_style, "none")
+        self.assertIsNone(nemotron.chunk_duration)
+        self.assertGreaterEqual(nemotron.max_tokens, 8192)
 
     def test_aliases_and_rejects_unknown(self):
         self.assertEqual(stt.normalize_stt_key("whisper"), "whisper-turbo")
         self.assertEqual(stt.normalize_stt_key("Qwen3"), "qwen3-asr")
+        self.assertEqual(
+            stt.normalize_stt_key("nvidia/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B"),
+            "nemotron",
+        )
+        self.assertEqual(stt.normalize_stt_key("nemotron-transcribe"), "nemotron")
         with self.assertRaisesRegex(ValueError, "Unknown STT"):
             stt.normalize_stt_key("not-a-model")
 
@@ -81,6 +94,18 @@ class SttCatalogTests(unittest.TestCase):
         self.assertEqual(stt.graph_backend(stt.STT_CHOICES["parakeet"]), "whisper")
         self.assertEqual(stt.graph_backend(stt.STT_CHOICES["whisper-turbo"]), "whisper")
         self.assertEqual(stt.graph_backend(stt.STT_CHOICES["voxtral"]), "voxtral")
+        self.assertEqual(stt.graph_backend(stt.STT_CHOICES["nemotron"]), "whisper")
+
+    def test_nemotron_model_env_overrides_checkpoint(self):
+        override = "nativ-community/Nemotron-3.5-Transcribe-30B-A4B-EA-4bit"
+        with mock.patch.dict(os.environ, {"NEMOTRON_STT_MODEL": override}, clear=False):
+            choice = stt.effective_choice(stt.STT_CHOICES["nemotron"])
+        self.assertEqual(choice.model_id, override)
+        self.assertEqual(choice.task, "asr")
+        self.assertEqual(
+            stt.effective_choice(stt.STT_CHOICES["parakeet"]).model_id,
+            stt.STT_CHOICES["parakeet"].model_id,
+        )
 
     def test_app_dialog_data_starts_with_current_default(self):
         import io
@@ -138,6 +163,11 @@ class GetTranscriberTests(unittest.TestCase):
         self.assertIs(transcriber, fake)
         self.assertEqual(make.call_args_list[0].args[0].key, "parakeet")
         self.assertEqual(make.call_args_list[1].args[0].key, "whisper-turbo")
+
+    def test_nemotron_missing_dep_does_not_fall_back(self):
+        with mock.patch.object(stt, "_make_transcriber", side_effect=ImportError("mlx-audio")):
+            with self.assertRaises(ImportError):
+                stt.get_transcriber("nemotron")
 
 
 if __name__ == "__main__":
